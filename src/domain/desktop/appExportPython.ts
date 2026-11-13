@@ -152,7 +152,8 @@ def _seed_home(home: Path) -> None:
 
 
 def _ensure_state_aliases(home: Path) -> None:
-    """Restore selected aliases without replacing any existing user data."""
+    """Restore selected aliases without replacing any existing user data. A directory alias whose target the seed
+    did not create is made, so the app can write through it; a file target is left for the seed to supply."""
     aliases = sorted(STATE_ALIASES, key=lambda pair: len(Path(pair[0]).parts))
     for alias, target, kind in aliases:
         link = home / alias
