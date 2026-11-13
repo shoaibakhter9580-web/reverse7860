@@ -430,6 +430,9 @@ export class WebBundleAnalysisWorker {
           throw cause;
         });
       const facts = this.#validateCompletedResult(stored, descriptor, script);
+      // Synchronous decoding/validation can outlast a timer that has not fired.
+      if (deadline.interruption === "timeout")
+        throw new AnalysisTimeoutError(OPERATION, timeoutMs);
       this.#retainedResultBytes += descriptor.bytes;
       completed = facts;
       result = ok(facts);
