@@ -4,6 +4,7 @@ import { projectCliAnalysisResult } from "./projectCliAnalysisResult.js";
 import { nativeDispatchMetadataInputSchema } from "../domain/native/objcSwiftMetadata.js";
 import { nativeInvestigationTraceLimitsSchema } from "../domain/native/nativeInvestigationGraph.js";
 import { nativeValueTraceInputSchema } from "../domain/native/nativeValueTrace.js";
+import { nativeFunctionAnnotationsInputSchema } from "../domain/native/nativeFunctionAnnotations.js";
 import { nativeDataTypeInputSchema } from "../domain/native/nativeDataType.js";
 import { z } from "incur";
 import {
