@@ -82,6 +82,57 @@ const omissionRejected = (schema: z.ZodObject | undefined): string[] =>
 const acceptsOmittedKey = (key: string, field: z.ZodType): boolean =>
   z.object({ [key]: field }).safeParse({}).success;
 
+/**
+ * Whether an argv field itself admits a JSON integer or number: its own type,
+ * union branches or repeated items. Object options parsed from JSON text keep
+ * numeric properties of their own and are not decimal tokens.
+ */
+const advertisesNumber = (schema: unknown): boolean => {
+  if (schema === null || typeof schema !== "object") return false;
+  const type: unknown = Reflect.get(schema, "type");
+  if (type === "integer" || type === "number") return true;
+  const branches = [
+    Reflect.get(schema, "anyOf"),
+    Reflect.get(schema, "oneOf"),
+  ].flatMap((value: unknown) => (Array.isArray(value) ? value : []));
+  return [...branches, Reflect.get(schema, "items")].some(advertisesNumber);
+};
+
+/** Every advertised `minimum`, so a probe can start inside the field's range. */
+const advertisedMinimums = (schema: unknown): number[] => {
+  if (schema === null || typeof schema !== "object") return [];
+  const own = Reflect.get(schema, "minimum");
+  return [
+    ...(typeof own === "number" ? [own] : []),
+    ...Object.values(schema).flatMap(advertisedMinimums),
+  ];
+};
+
+/**
+ * Find a decimal argv token the parser accepts as a number. A repeated option
+ * parses each token as one array item, so the token is wrapped to match.
+ */
+const decimalProbe = (
+  field: z.ZodType,
+  schema: unknown,
+):
+  | { readonly value: number; readonly token: (text: string) => unknown }
+  | undefined => {
+  for (const value of new Set([1, ...advertisedMinimums(schema)])) {
+    if (!Number.isSafeInteger(value) || value < 0) continue;
+    for (const repeated of [false, true]) {
+      const token = (text: string): unknown => (repeated ? [text] : text);
+      const parsed = field.safeParse(token(String(value)));
+      if (!parsed.success) continue;
+      const item: unknown = Array.isArray(parsed.data)
+        ? parsed.data[0]
+        : parsed.data;
+      if (item === value) return { value, token };
+    }
+  }
+  return undefined;
+};
+
 const registerParserAdvertisementInventoryTests = (): void => {
   it("require exactly the inputs whose omission the parser rejects", async () => {
     const cli = createCli({});
@@ -120,6 +171,43 @@ const registerParserAdvertisementInventoryTests = (): void => {
           );
       }
     }
+    expect(mismatches).toEqual([]);
+  });
+
+  it("advertise the argv token grammar of every numeric field", async () => {
+    const cli = createCli({});
+    const ajv = new Ajv2020({ strict: false });
+    const mismatches: string[] = [];
+    let checked = 0;
+    for (const command of createCliInventory(cli).primary) {
+      const advertised = await advertisedSchema(cli, command);
+      for (const group of INPUT_GROUPS) {
+        const parser = parserSchema(cli, command, group);
+        for (const [key, field] of Object.entries(parser?.shape ?? {})) {
+          const schema = advertised[group]?.properties[key];
+          if (schema === undefined) continue;
+          const label = `${command} ${group}.${key}`;
+          // Parser discovery keeps string-advertised fields such as --port.
+          const probe = decimalProbe(field as z.ZodType, schema);
+          if (probe === undefined) {
+            if (advertisesNumber(schema))
+              mismatches.push(`${label}: no in-range decimal token parses`);
+            continue;
+          }
+          checked += 1;
+          const { value, token } = probe;
+          const validate = ajv.compile(schema as object);
+          if (!validate(token(String(value))))
+            mismatches.push(`${label}: rejects token "${String(value)}"`);
+          for (const spelling of [`0x${value.toString(16)}`, `${value}e0`])
+            if (validate(token(spelling)))
+              mismatches.push(
+                `${label}: admits token ${JSON.stringify(spelling)}`,
+              );
+        }
+      }
+    }
+    expect(checked).toBeGreaterThan(100);
     expect(mismatches).toEqual([]);
   });
 };
@@ -739,7 +827,12 @@ describe("reference-source outline-depth input schema", () => {
     const cli = createCli({});
     const advertised = await advertisedSchema(cli, "import-reference-source");
     const outlineDepth = advertised.options?.properties?.outlineDepth;
-    expect(outlineDepth).toMatchObject({ type: "integer", minimum: 0 });
+    expect(outlineDepth).toMatchObject({
+      anyOf: [
+        { type: "integer", minimum: 0 },
+        { type: "string", pattern: "^[0-9]+$" },
+      ],
+    });
 
     const parser = parserSchema(cli, "import-reference-source", "options");
     expect(parser?.safeParse({}).success).toBe(true);
@@ -790,6 +883,9 @@ describe("reference-source outline-depth input schema", () => {
     expect(validate({ outlineDepth: 9007199254740992 })).toBe(false);
     expect(validate({ outlineDepth: 2 })).toBe(false);
     expect(validate({ outlineDepth: 2, detail: "full" })).toBe(false);
+    expect(validate({ outlineDepth: "02", detail: "summary" })).toBe(true);
+    for (const token of ["0x2", "2e0"])
+      expect(validate({ outlineDepth: token, detail: "summary" })).toBe(false);
   });
 });
 

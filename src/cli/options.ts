@@ -24,13 +24,6 @@ type DecimalWrapper =
       readonly kind: "optional" | "exactOptional" | "nullable" | "readonly";
     };
 
-/** Parse decimal integer tokens before Number coercion can erase their syntax. */
-export const cliIntegerArgument = (min: number) =>
-  z
-    .string()
-    .regex(DECIMAL_INTEGER_TOKEN, "Expected a decimal integer")
-    .pipe(z.coerce.number<string>().safe().min(min));
-
 const decimalToken = (domain: z.ZodNumber) =>
   z
     .string()
@@ -42,10 +35,13 @@ const unwrapSchema = (field: { unwrap: () => unknown }): z.ZodType =>
   field.unwrap() as z.ZodType;
 
 /**
- * Incur advertises Zod's output view. Publish the input view so the decimal
- * token guard survives `--schema` and other SDK conversions.
+ * Incur advertises Zod's output view. Publish the input view so a token
+ * grammar that transforms argv text survives `--schema` and other SDK
+ * conversions.
  */
-const publishDecimalInput = (field: z.ZodType): z.ZodType => {
+export const publishDecimalInput = <Field extends z.ZodType>(
+  field: Field,
+): Field => {
   const { $schema: _dialect, ...inputSchema } = z.toJSONSchema(field, {
     io: "input",
   });
@@ -151,6 +147,10 @@ export const cliDecimalField = <Field extends z.ZodType>(
       : admitted.describe(numeric.description);
   return publishDecimalInput(described) as z.ZodType<z.output<Field>>;
 };
+
+/** Safe decimal integer at or above `min`, advertised with its token guard. */
+export const cliIntegerArgument = (min: number) =>
+  cliDecimalField(z.int().safe().min(min));
 
 /** Adapt each numeric property of a shared shape; other properties stay unchanged. */
 export const cliDecimalShape = <Shape extends Record<string, z.ZodType>>(
