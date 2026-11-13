@@ -473,7 +473,7 @@ it.each(["directory", "file", undefined] as const)(
       {
         alias: "settings",
         target: ".config/notes",
-        kind: kind ?? "unknown",
+        ...(kind === undefined ? {} : { kind }),
       },
     ]);
   },
