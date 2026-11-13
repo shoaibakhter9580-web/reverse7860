@@ -81,6 +81,46 @@ export const readHostFile = async (
   }
 };
 
-/** Whether a host path names a regular file, following links. */
-export const isHostFile = async (path: string): Promise<boolean> =>
-  (await stat(path).catch(() => undefined))?.isFile() === true;
+/**
+ * Whether a host path names a regular file, following links. A failed check is
+ * either one no retry can change, which settles the candidate the same way for
+ * the linker, or a transient failure, which leaves it unresolved.
+ */
+export type HostFileProbe =
+  | { readonly kind: "file"; readonly isFile: boolean }
+  | {
+      readonly kind: "unknown";
+      /** The check settled the candidate; the linker cannot use this path either. */
+      readonly unreachable: boolean;
+    };
+
+/**
+ * Codes whose failure means the candidate cannot be reached at all.
+ *
+ * A denied folder is one; so are a name the filesystem refuses to look up and a
+ * link chain that loops. The loader treats a RUNPATH/RPATH entry that makes
+ * `stat` fail this way as unusable and goes on to the next entry, so retrying
+ * it in place would stop the walk before the candidate that was actually
+ * loaded. It still continues to the linker cache, so this stays `unreachable`
+ * rather than a settled absence.
+ */
+const UNREACHABLE_CODES = new Set(["EACCES", "EPERM", "ENAMETOOLONG", "ELOOP"]);
+
+/** The host file at `path`, with why a check could not tell it. */
+export const probeHostFile = async (path: string): Promise<HostFileProbe> => {
+  try {
+    return { kind: "file", isFile: (await stat(path)).isFile() };
+  } catch (cause: unknown) {
+    const code = (cause as NodeJS.ErrnoException).code ?? "";
+    // Only a missing name establishes that no file is there.
+    return code === "ENOENT" || code === "ENOTDIR"
+      ? { kind: "file", isFile: false }
+      : { kind: "unknown", unreachable: UNREACHABLE_CODES.has(code) };
+  }
+};
+
+/** Whether a host path names a regular file, following links; null when the check could not tell, such as a denied parent folder. */
+export const hostFileKind = async (path: string): Promise<boolean | null> => {
+  const probe = await probeHostFile(path);
+  return probe.kind === "file" ? probe.isFile : null;
+};

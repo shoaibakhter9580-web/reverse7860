@@ -120,3 +120,5 @@ export const stateDirectories = async (
     }),
   );
 };
+
+/** Whether the path was there before the capture, or null when the check could not tell, such as when a parent folder denied it. */
