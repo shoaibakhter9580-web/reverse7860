@@ -9,6 +9,7 @@ import { AnalysisCleanupLease } from "../artifacts/AnalysisCleanupLease.js";
 import { STARTUP_OWNER_CLOSED } from "../process/SharedStartupAttempt.js";
 import { constants } from "node:fs";
 import { access, stat } from "node:fs/promises";
+import { posix, win32 } from "node:path";
 import { ArtifactResourceScope } from "../artifacts/ArtifactResourceScope.js";
 import type { RetainedResourceScope } from "./AnalysisProvider.js";
 import {
@@ -529,7 +530,7 @@ const collectDoctorIdentity = async (
       },
       installations: {
         paths: installationPaths,
-        state: installationState(installationPaths),
+        state: installationState(installationPaths, host.platform),
       },
       skill: {
         installed_version: installedSkillIdentity?.version ?? null,
@@ -626,10 +627,25 @@ const registrationCheck = (
   remediation: registration.remediation,
 });
 
+const installationDirectoryKey = (
+  path: string,
+  platform: NodeJS.Platform = process.platform,
+): string => {
+  const isWindows = platform === "win32";
+  const dir = isWindows ? win32.dirname(path) : posix.dirname(path);
+  return isWindows ? dir.toLowerCase() : dir;
+};
+
 const installationState = (
   paths: readonly string[],
-): DoctorIdentity["installations"]["state"] =>
-  paths.length === 0 ? "unknown" : paths.length === 1 ? "single" : "multiple";
+  platform: NodeJS.Platform = process.platform,
+): DoctorIdentity["installations"]["state"] => {
+  if (paths.length === 0) return "unknown";
+  const directories = new Set(
+    paths.map((path) => installationDirectoryKey(path, platform)),
+  );
+  return directories.size <= 1 ? "single" : "multiple";
+};
 
 /** Optional outer-adapter diagnostics composed without reversing dependencies. */
 export interface SystemDoctorHostOptions {
