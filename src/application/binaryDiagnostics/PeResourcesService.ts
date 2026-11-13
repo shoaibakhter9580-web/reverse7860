@@ -10,6 +10,15 @@ import {
   type PeResources,
   type PeResourceIdentity,
 } from "../../domain/native/peResources.js";
+import {
+  BYTE_PRESERVING_CODE_PAGE,
+  DEFAULT_CODE_PAGE,
+  RESOURCE_CODE_PAGES,
+  type DelphiFormObject,
+  type DelphiFormResource,
+  type DelphiFormText,
+  type DelphiFormValue,
+} from "../../domain/native/delphiForm.js";
 import { peSubjectArchitecture } from "../../domain/peMachine.js";
 import { err, ok, type Result } from "../../domain/result.js";
 import { completeProviderEvidence } from "../ProviderOperationExecution.js";
@@ -130,45 +139,250 @@ const validReport = (
     )
   )
     return false;
-  return report.icon_groups.every((group) => {
-    const resource = report.resources[group.resource_index];
-    if (
-      resource === undefined ||
-      resource.type.kind !== "id" ||
-      resource.type.id !== 14
-    )
-      return false;
-    return group.images.every(
-      (image) =>
-        inside(image.location) &&
-        image.location.offset >= resource.payload.location.offset &&
-        image.location.offset + image.location.bytes <=
-          resource.payload.location.offset + resource.payload.location.bytes &&
-        image.candidate_resource_indices.every((index) => {
-          const icon = report.resources[index];
-          return (
-            icon !== undefined &&
-            icon.type.kind === "id" &&
-            icon.type.id === 3 &&
-            icon.name.kind === "id" &&
-            icon.name.id === image.resource_id
-          );
-        }) &&
-        (image.same_language_resource_index === null
-          ? image.size_matches === null
-          : image.candidate_resource_indices.includes(
-              image.same_language_resource_index,
-            ) &&
-            sameIdentity(
-              report.resources[image.same_language_resource_index]?.language,
-              resource.language,
-            ) &&
-            image.size_matches ===
-              (report.resources[image.same_language_resource_index]?.payload
-                .location.bytes ===
-                image.declared_bytes)),
+  return (
+    report.icon_groups.every((group) => {
+      const resource = report.resources[group.resource_index];
+      if (
+        resource === undefined ||
+        resource.type.kind !== "id" ||
+        resource.type.id !== 14
+      )
+        return false;
+      return group.images.every(
+        (image) =>
+          inside(image.location) &&
+          image.location.offset >= resource.payload.location.offset &&
+          image.location.offset + image.location.bytes <=
+            resource.payload.location.offset +
+              resource.payload.location.bytes &&
+          image.candidate_resource_indices.every((index) => {
+            const icon = report.resources[index];
+            return (
+              icon !== undefined &&
+              icon.type.kind === "id" &&
+              icon.type.id === 3 &&
+              icon.name.kind === "id" &&
+              icon.name.id === image.resource_id
+            );
+          }) &&
+          (image.same_language_resource_index === null
+            ? image.size_matches === null
+            : image.candidate_resource_indices.includes(
+                image.same_language_resource_index,
+              ) &&
+              sameIdentity(
+                report.resources[image.same_language_resource_index]?.language,
+                resource.language,
+              ) &&
+              image.size_matches ===
+                (report.resources[image.same_language_resource_index]?.payload
+                  .location.bytes ===
+                  image.declared_bytes)),
+      );
+    }) &&
+    // A decoded form must come from an RT_RCDATA payload and stay inside it,
+    // so a provider result cannot point a form at another resource's bytes.
+    report.delphi_forms.every((form) => {
+      const resource = report.resources[form.resource_index];
+      if (
+        resource === undefined ||
+        resource.type.kind !== "id" ||
+        resource.type.id !== 10
+      )
+        return false;
+      const payload = resource.payload.location;
+      const within = ({ offset, bytes }: { offset: number; bytes: number }) =>
+        offset >= payload.offset &&
+        offset + bytes <= payload.offset + payload.bytes;
+      const signature = form.signature_location;
+      const signatureEnd = signature.offset + signature.bytes;
+      // A null prefix starts the payload; a present prefix covers every byte
+      // before the signature. Either way the root starts right after it.
+      const prefixMatches =
+        form.prefix === null
+          ? signature.offset === payload.offset
+          : form.prefix.location.offset === payload.offset &&
+            form.prefix.location.bytes === signature.offset - payload.offset &&
+            form.prefix.location.bytes > 0;
+      return (
+        // The declared page must be the resource's own declaration, and the
+        // source classification must agree with it, so published Evidence
+        // cannot claim a declaration the artifact did not make.
+        form.declared_code_page === resource.code_page &&
+        signatureMatchesVersion(form) &&
+        codePageSourceMatches(form) &&
+        signature.bytes === 4 &&
+        within(signature) &&
+        prefixMatches &&
+        form.root.location.offset === signatureEnd &&
+        within(form.root.location) &&
+        insideLocations(form.root, within, form.code_page)
+      );
+    })
+  );
+};
+
+/** Every nested location of a decoded form must stay inside its payload. */
+const insideLocations = (
+  object: DelphiFormObject,
+  within: (range: { offset: number; bytes: number }) => boolean,
+  codePage: string,
+): boolean => {
+  if (!within(object.location)) return false;
+  if (object.unknown !== null && !within(object.unknown.location)) return false;
+  const text = (item: DelphiFormText | null): boolean =>
+    item === null || (within(item.location) && item.code_page === codePage);
+  if (!text(object.class_name) || !text(object.component_name)) return false;
+  return (
+    object.properties.every(
+      (property) =>
+        within(property.location) &&
+        text(property.name) &&
+        insideValue(property.value, within, codePage, property.value_type),
+    ) &&
+    object.children.every((child) => insideLocations(child, within, codePage))
+  );
+};
+
+/** The filer signature and the version it derives are a one-to-one pair. */
+const signatureMatchesVersion = (form: DelphiFormResource): boolean =>
+  form.signature === "TPF0"
+    ? form.version === "boVersion0"
+    : form.version === "boVersion1";
+
+/** The source classification and label must agree with the declared page. */
+const codePageSourceMatches = (form: DelphiFormResource): boolean => {
+  if (form.declared_code_page === 0)
+    return (
+      form.code_page_source === "default" &&
+      form.code_page === DEFAULT_CODE_PAGE
     );
-  });
+  const label = RESOURCE_CODE_PAGES[form.declared_code_page];
+  if (label !== undefined)
+    return form.code_page_source === "resource" && form.code_page === label;
+  return (
+    form.code_page_source === "unsupported" &&
+    form.code_page === BYTE_PRESERVING_CODE_PAGE
+  );
+};
+
+/** The decoder derives a string's label from its value type and resource page. */
+const valuePageMatchesType = (
+  valueType: string | null,
+  label: string,
+  codePage: string,
+): boolean => {
+  if (valueType === null)
+    return label === codePage || label === "utf-8" || label === "utf-16le";
+  if (valueType === "vaString" || valueType === "vaLString")
+    return label === codePage;
+  if (valueType === "vaWString" || valueType === "vaUString")
+    return label === "utf-16le";
+  return valueType === "vaUTF8String" && label === "utf-8";
+};
+
+const valueMatchesType = (
+  valueType: string,
+  value: DelphiFormValue,
+  codePage: string,
+): boolean => {
+  if (value.kind === "unknown") return true;
+  switch (valueType) {
+    case "vaNull":
+      return value.kind === "null";
+    case "vaNil":
+      return value.kind === "nil";
+    case "vaFalse":
+    case "vaTrue":
+      return (
+        value.kind === "boolean" && value.value === (valueType === "vaTrue")
+      );
+    case "vaInt8":
+      return value.kind === "integer" && value.width === 8 && value.signed;
+    case "vaInt16":
+      return value.kind === "integer" && value.width === 16 && value.signed;
+    case "vaInt32":
+      return value.kind === "integer" && value.width === 32 && value.signed;
+    case "vaInt64":
+      return value.kind === "integer" && value.width === 64 && value.signed;
+    case "vaQWord":
+      return value.kind === "integer" && value.width === 64 && !value.signed;
+    case "vaExtended":
+    case "vaSingle":
+    case "vaCurrency":
+    case "vaDate":
+    case "vaDouble":
+      return value.kind === "float";
+    case "vaString":
+    case "vaLString":
+    case "vaWString":
+    case "vaUTF8String":
+    case "vaUString":
+      return (
+        value.kind === "string" &&
+        valuePageMatchesType(valueType, value.code_page, codePage)
+      );
+    case "vaIdent":
+      return value.kind === "identifier";
+    case "vaBinary":
+      return value.kind === "binary";
+    case "vaList":
+      return value.kind === "list";
+    case "vaSet":
+      return value.kind === "set";
+    case "vaCollection":
+      return value.kind === "collection";
+    default:
+      return false;
+  }
+};
+
+const insideValue = (
+  value: DelphiFormValue,
+  within: (range: { offset: number; bytes: number }) => boolean,
+  codePage: string,
+  valueType: string | null = null,
+): boolean => {
+  if (valueType !== null && !valueMatchesType(valueType, value, codePage))
+    return false;
+  if (value.kind === "string")
+    return (
+      within(value.location) &&
+      valuePageMatchesType(valueType, value.code_page, codePage)
+    );
+  if (value.kind === "list")
+    return (
+      within(value.location) &&
+      value.items.every((item) => insideValue(item, within, codePage))
+    );
+  if (value.kind === "set")
+    return (
+      within(value.location) &&
+      value.names.every(
+        (item) => within(item.location) && item.code_page === codePage,
+      )
+    );
+  if (value.kind === "collection")
+    return (
+      within(value.location) &&
+      value.items.every(
+        (item) =>
+          within(item.location) &&
+          item.properties.every(
+            (property) =>
+              within(property.location) &&
+              within(property.name.location) &&
+              property.name.code_page === codePage &&
+              insideValue(
+                property.value,
+                within,
+                codePage,
+                property.value_type,
+              ),
+          ),
+      )
+    );
+  return within(value.location);
 };
 
 const sameIdentity = (
