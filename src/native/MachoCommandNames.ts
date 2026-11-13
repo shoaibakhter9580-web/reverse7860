@@ -4,6 +4,7 @@ import {
   machoFixedWordFieldNames,
   readMachoLoadCommandTableHeader,
 } from "../domain/apple/machoLoadCommands.js";
+import { machoLoadCommandAlignment } from "../domain/apple/machoContainer.js";
 import { readMachoSegmentHeader } from "../domain/apple/machoSegmentHeader.js";
 import { readMachoSectionHeader } from "../domain/apple/machoSectionHeader.js";
 import { createHash } from "node:crypto";
@@ -658,6 +659,7 @@ export const readMachoCommandNames = async (
         tools,
       };
     }
+    const commandAlignment = machoLoadCommandAlignment(table.wide);
     const fullyDecoded =
       (fixedNames !== undefined && frame.size === 8 + fixedNames.length * 4) ||
       (uuid !== undefined && frame.size === 24) ||
@@ -668,7 +670,21 @@ export const readMachoCommandNames = async (
         frame.size ===
           (segmentWide ? 72 : 56) +
             sections.length * (segmentWide ? 80 : 68)) ||
-      (build !== undefined && frame.size === 24 + build.tools.length * 8);
+      (build !== undefined && frame.size === 24 + build.tools.length * 8) ||
+      // Linker options are a count plus NUL-terminated strings; the command
+      // size is aligned to the image width (8 bytes for 64-bit, 4 for
+      // 32-bit), so trailing zero padding is expected.
+      (linkerOptions !== undefined &&
+        frame.size ===
+          Math.ceil(
+            (12 +
+              linkerOptions.reduce(
+                (total, option) => total + option.length + 1,
+                0,
+              )) /
+              commandAlignment,
+          ) *
+            commandAlignment);
     let rawSha256: string | null = null;
     if (!fullyDecoded && frame.size <= maximumStringBytes) {
       const digest = createHash("sha256");

@@ -95,7 +95,6 @@ const registerElectronFuseCommand = (
 
 /** Anchor relative input without changing which file symlink/.. selects. */
 const absoluteElectronFusePath = (path: string): string => {
-  if (path === "") return path;
   // Win32 resolves dot components before directory links, including drive-relative paths.
   if (sep === "\\") return resolve(path);
   if (isAbsolute(path)) return path;
