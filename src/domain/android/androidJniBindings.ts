@@ -48,6 +48,12 @@ export const compileAndroidJniLibrarySelection = (
     (paths === undefined || paths.has(library.path));
 };
 
+/** A library path names its ABI in the `lib/<abi>/<name>.so` layout. */
+const libraryPathAbi = (path: string): string | null => {
+  const match = /^lib\/([^/]+)\/[^/]+\.so$/u.exec(path);
+  return match === null ? null : match[1]!;
+};
+
 /** Physical member occurrence and authenticated bytes; paths are never keys alone. */
 export const androidJniLibraryIdentitySchema = z.strictObject({
   library_id: z.string(),
@@ -445,8 +451,25 @@ export const projectAndroidJniBindings = (input: {
       const ambiguous = selected.some(
         (candidate) => candidate.class_attribution === "ambiguous-native-pair",
       );
+      // Only a caller who selected no library path has excluded every split
+      // library on purpose. An omitted filter is the documented include-all
+      // default, so an unexamined library for this ABI can still hold the
+      // binding. A selected path keeps the binding partial when the inventory
+      // gap can still hold it: a path that names this binding's ABI, or one
+      // outside the recognized layout whose ABI stays undetermined. A path that
+      // names another ABI can never match this binding's archive, so an
+      // inventory gap cannot change its `unmatched` result.
+      const selectedLibraryPaths = input.selection.library_paths;
+      const libraryInventoryMatters =
+        selectedLibraryPaths === undefined ||
+        selectedLibraryPaths.some((path) => {
+          const selectedAbi = libraryPathAbi(path);
+          return selectedAbi === null || selectedAbi === abi;
+        });
       const incomplete =
-        input.libraryInventory.status !== "complete" ||
+        (libraryInventoryMatters &&
+          (input.libraryInventory.status !== "complete" ||
+            input.libraryInventory.unknowns.length > 0)) ||
         abiLibraries.some(
           (library) =>
             library.failure !== null ||
